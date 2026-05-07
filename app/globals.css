@@ -442,3 +442,77 @@ td {
     border-radius: 16px;
   }
 }
+
+.json-actions,
+.date-shortcuts,
+.date-buttons {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+}
+
+.json-actions {
+  grid-template-columns: auto 1fr;
+}
+
+.json-key-list {
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  display: grid;
+  margin-top: 0.75rem;
+  max-height: 18rem;
+  overflow: auto;
+}
+
+.json-key-row {
+  background: #fff;
+  border-bottom: 1px solid #edf1f6;
+  border-radius: 0;
+  color: var(--text);
+  display: grid;
+  font-weight: 600;
+  gap: 0.25rem;
+  padding: 0.7rem;
+  text-align: left;
+}
+
+.json-key-row:last-child {
+  border-bottom: 0;
+}
+
+.json-key-row span,
+.json-key-row small,
+.mini-note {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.date-shortcuts {
+  background: #f8fafc;
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  grid-template-columns: 1fr 1fr;
+  padding: 0.7rem;
+}
+
+.date-buttons {
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.compact-button {
+  margin-top: 0;
+}
+
+@media (max-width: 640px) {
+  .json-actions,
+  .date-shortcuts,
+  .date-buttons {
+    grid-template-columns: 1fr;
+  }
+
+  .date-buttons {
+    grid-column: auto;
+  }
+}
