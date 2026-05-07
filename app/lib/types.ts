@@ -10,7 +10,7 @@ export const COMMON_AMPLITUDE_FIELDS = [
   "user_properties"
 ] as const;
 
-export const LIMIT_OPTIONS = [100, 500, 1000, 10000] as const;
+export const LIMIT_OPTIONS = [100, 500, 1000, 10000, 50000] as const;
 
 export type FieldSchema = {
   name: string;
@@ -56,6 +56,32 @@ export type QueryRequest = {
   limit: number;
   orderByEventTime?: boolean;
   estimateOnly?: boolean;
+};
+
+export type JsonSource = "event_properties" | "user_properties";
+
+export type JsonProfileKey = {
+  path: string;
+  count: number;
+  samples: string[];
+};
+
+export type JsonProfileRequest = {
+  projectId: string;
+  dataset: string;
+  table: string;
+  source: JsonSource;
+  sourceType?: string;
+  rowLimit?: number;
+  startDate?: string;
+  endDate?: string;
+  orderByEventTime?: boolean;
+};
+
+export type JsonProfileResponse = {
+  keys: JsonProfileKey[];
+  scannedRows: number;
+  sql: string;
 };
 
 export type QueryResponse = {

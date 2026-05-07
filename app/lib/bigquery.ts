@@ -2,7 +2,7 @@ import { BigQuery } from "@google-cloud/bigquery";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { OAuth2Client } from "google-auth-library";
-import { COMMON_AMPLITUDE_FIELDS, LIMIT_OPTIONS, QueryRequest, SelectedField } from "./types";
+import { COMMON_AMPLITUDE_FIELDS, JsonProfileKey, JsonProfileRequest, LIMIT_OPTIONS, QueryRequest, SelectedField } from "./types";
 
 const MAX_LARGE_SCAN_BYTES = 10 * 1024 * 1024 * 1024;
 const GCLOUD_CLIENT_CACHE_MS = 45 * 60 * 1000;
@@ -90,8 +90,8 @@ export function cleanJsonKey(key: string) {
   if (!trimmed) {
     throw new Error("JSON key cannot be empty.");
   }
-  if (!/^[A-Za-z0-9_.-]+$/.test(trimmed)) {
-    throw new Error("JSON keys may only contain letters, numbers, underscores, dashes, and dots.");
+  if (trimmed.includes("'")) {
+    throw new Error("JSON keys cannot contain single quotes.");
   }
   return trimmed;
 }
@@ -132,7 +132,7 @@ function escapeJsonPathPart(part: string) {
 export function buildQuery(request: QueryRequest) {
   const limit = Number(request.limit);
   if (!LIMIT_OPTIONS.includes(limit as (typeof LIMIT_OPTIONS)[number])) {
-    throw new Error("Choose one of the supported LIMIT values: 100, 500, 1,000, or 10,000.");
+    throw new Error("Choose one of the supported LIMIT values: 100, 500, 1,000, 10,000, or 50,000.");
   }
 
   if (!request.fields.length) {
@@ -229,6 +229,93 @@ function requiredValue(value: string | undefined, label: string) {
   }
 
   return value;
+}
+
+
+export function buildJsonProfileQuery(request: JsonProfileRequest) {
+  const source = request.source === "user_properties" ? "user_properties" : "event_properties";
+  const rowLimit = Math.min(Math.max(Number(request.rowLimit) || 500, 1), 2000);
+  const params: Record<string, string> = {};
+  const whereClauses = [`${quoteFieldPath(source)} IS NOT NULL`];
+
+  if (request.startDate) {
+    params.start_date = request.startDate;
+    whereClauses.push(`${quoteFieldPath("event_time")} >= TIMESTAMP(@start_date)`);
+  }
+
+  if (request.endDate) {
+    params.end_date = request.endDate;
+    whereClauses.push(`${quoteFieldPath("event_time")} < TIMESTAMP_ADD(TIMESTAMP(@end_date), INTERVAL 1 DAY)`);
+  }
+
+  const sql = [
+    `SELECT ${quoteFieldPath(source)} AS json_blob`,
+    `FROM ${quoteTablePath(request.projectId, request.dataset, request.table)}`,
+    `WHERE ${whereClauses.join("\n  AND ")}`,
+    request.orderByEventTime ? `ORDER BY ${quoteFieldPath("event_time")} DESC` : "",
+    `LIMIT ${rowLimit}`
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return { sql, params };
+}
+
+export async function profileJsonFields(request: JsonProfileRequest) {
+  const { sql, params } = buildJsonProfileQuery(request);
+  const rows = await runQuery(request.projectId, sql, params);
+  const keyMap = new Map<string, { count: number; samples: Set<string> }>();
+
+  for (const row of rows) {
+    const parsed = parseJsonBlob(row.json_blob);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      continue;
+    }
+
+    collectJsonPaths(parsed as Record<string, unknown>, "", keyMap);
+  }
+
+  const keys: JsonProfileKey[] = [...keyMap.entries()]
+    .map(([path, value]) => ({ path, count: value.count, samples: [...value.samples] }))
+    .sort((a, b) => b.count - a.count || a.path.localeCompare(b.path))
+    .slice(0, 250);
+
+  return { keys, scannedRows: rows.length, sql };
+}
+
+function parseJsonBlob(value: unknown): unknown {
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+
+  return value;
+}
+
+function collectJsonPaths(value: Record<string, unknown>, prefix: string, keyMap: Map<string, { count: number; samples: Set<string> }>) {
+  for (const [key, nested] of Object.entries(value)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    const entry = keyMap.get(path) ?? { count: 0, samples: new Set<string>() };
+    entry.count += 1;
+
+    if (nested !== null && nested !== undefined && entry.samples.size < 4) {
+      entry.samples.add(sampleJsonValue(nested));
+    }
+
+    keyMap.set(path, entry);
+
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      collectJsonPaths(nested as Record<string, unknown>, path, keyMap);
+    }
+  }
+}
+
+function sampleJsonValue(value: unknown) {
+  const serialized = typeof value === "object" ? JSON.stringify(value) : String(value);
+  return serialized.length > 80 ? `${serialized.slice(0, 77)}…` : serialized;
 }
 
 export async function getSchema(projectId: string, dataset: string, table: string) {

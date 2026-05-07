@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
-import { COMMON_AMPLITUDE_FIELDS, FieldSchema, FilterOperator, LIMIT_OPTIONS, QueryFilter, QueryResponse, SelectedField } from "./lib/types";
+import { COMMON_AMPLITUDE_FIELDS, FieldSchema, FilterOperator, JsonProfileResponse, JsonSource, LIMIT_OPTIONS, QueryFilter, QueryResponse, SelectedField } from "./lib/types";
 
 const operatorLabels: Record<FilterOperator, string> = {
   equals: "Equals",
@@ -14,9 +14,9 @@ const operatorLabels: Record<FilterOperator, string> = {
 };
 
 const defaultConnection = {
-  projectId: process.env.NEXT_PUBLIC_DEFAULT_PROJECT_ID ?? "",
-  dataset: process.env.NEXT_PUBLIC_DEFAULT_DATASET ?? "",
-  table: process.env.NEXT_PUBLIC_DEFAULT_TABLE ?? ""
+  projectId: process.env.NEXT_PUBLIC_DEFAULT_PROJECT_ID ?? "waking-up-c2a9b",
+  dataset: process.env.NEXT_PUBLIC_DEFAULT_DATASET ?? "amplitude",
+  table: process.env.NEXT_PUBLIC_DEFAULT_TABLE ?? "EVENTS_271700"
 };
 
 export default function Home() {
@@ -25,8 +25,13 @@ export default function Home() {
   const [hasEventTime, setHasEventTime] = useState(false);
   const [schemaSearch, setSchemaSearch] = useState("");
   const [selectedFields, setSelectedFields] = useState<SelectedField[]>([]);
-  const [virtualSource, setVirtualSource] = useState<"event_properties" | "user_properties">("event_properties");
+  const [virtualSource, setVirtualSource] = useState<JsonSource>("event_properties");
   const [virtualKey, setVirtualKey] = useState("");
+  const [jsonProfile, setJsonProfile] = useState<JsonProfileResponse | null>(null);
+  const [jsonSearch, setJsonSearch] = useState("");
+  const [jsonLoading, setJsonLoading] = useState(false);
+  const [dateStart, setDateStart] = useState("");
+  const [dateEnd, setDateEnd] = useState("");
   const [filters, setFilters] = useState<QueryFilter[]>([]);
   const [limit, setLimit] = useState(100);
   const [query, setQuery] = useState<QueryResponse | null>(null);
@@ -45,6 +50,12 @@ export default function Home() {
     if (!search) return schema;
     return schema.filter((field) => `${field.name} ${field.type} ${field.mode ?? ""} ${field.description ?? ""}`.toLowerCase().includes(search));
   }, [schema, schemaSearch]);
+  const filteredJsonKeys = useMemo(() => {
+    const search = jsonSearch.toLowerCase().trim();
+    const keys = jsonProfile?.keys ?? [];
+    if (!search) return keys;
+    return keys.filter((key) => `${key.path} ${key.samples.join(" ")}`.toLowerCase().includes(search));
+  }, [jsonProfile, jsonSearch]);
 
   async function loadSchema(event: FormEvent) {
     event.preventDefault();
@@ -64,6 +75,7 @@ export default function Home() {
       setHasEventTime(Boolean(data.hasEventTime));
       setSelectedFields([]);
       setFilters([]);
+      setJsonProfile(null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load schema.");
     } finally {
@@ -88,12 +100,12 @@ export default function Home() {
     setSelectedFields((current) => mergeSelected(current, common));
   }
 
-  function addVirtualField() {
-    const key = virtualKey.trim();
+  function addVirtualField(keyOverride?: string) {
+    const key = (keyOverride ?? virtualKey).trim();
     if (!key) return;
     const next: SelectedField = { kind: "virtual", source: virtualSource, key, sourceType: fieldTypeMap.get(virtualSource) };
     setSelectedFields((current) => mergeSelected(current, [next]));
-    setVirtualKey("");
+    if (!keyOverride) setVirtualKey("");
   }
 
   function addFilter() {
@@ -111,6 +123,56 @@ export default function Home() {
 
   function removeFilter(id: string) {
     setFilters((current) => current.filter((filter) => filter.id !== id));
+  }
+
+  async function loadJsonProfile() {
+    setJsonLoading(true);
+    setError("");
+
+    try {
+      const response = await fetch("/api/json-profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...connection,
+          source: virtualSource,
+          sourceType: fieldTypeMap.get(virtualSource),
+          rowLimit: 750,
+          startDate: hasEventTime ? dateStart : "",
+          endDate: hasEventTime ? dateEnd : "",
+          orderByEventTime: hasEventTime
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "Unable to explore JSON fields.");
+      setJsonProfile(data);
+    } catch (profileError) {
+      setError(profileError instanceof Error ? profileError.message : "Unable to explore JSON fields.");
+    } finally {
+      setJsonLoading(false);
+    }
+  }
+
+  function applyDateFilter() {
+    if (!hasEventTime || (!dateStart && !dateEnd)) return;
+    const eventTimeField: SelectedField = { kind: "column", name: "event_time", type: fieldTypeMap.get("event_time") };
+    const filter: QueryFilter = {
+      id: "quick-date-filter",
+      field: eventTimeField,
+      operator: dateStart && dateEnd ? "between" : dateStart ? "greater_than" : "less_than",
+      value: dateStart ? startOfDateInput(dateStart) : endOfDateInput(dateEnd),
+      valueTo: dateStart && dateEnd ? endOfDateInput(dateEnd) : ""
+    };
+
+    setFilters((current) => [filter, ...current.filter((item) => item.id !== filter.id)]);
+  }
+
+  function setRelativeDateRange(days: number) {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - (days - 1));
+    setDateStart(formatDateInput(start));
+    setDateEnd(formatDateInput(end));
   }
 
   async function runQuery(estimateOnly = false) {
@@ -244,17 +306,31 @@ export default function Home() {
             <div className="card-title compact">
               <span>+</span>
               <div>
-                <h2>JSON virtual fields</h2>
-                <p>Extract keys from Amplitude JSON columns.</p>
+                <h2>JSON field explorer</h2>
+                <p>Scan recent JSON objects, search discovered paths, then add the values you want as output fields.</p>
               </div>
             </div>
             <div className="inline-form">
-              <select value={virtualSource} onChange={(event) => setVirtualSource(event.target.value as "event_properties" | "user_properties")}>
+              <select value={virtualSource} onChange={(event) => { setVirtualSource(event.target.value as JsonSource); setJsonProfile(null); }}>
                 <option value="event_properties">event_properties</option>
                 <option value="user_properties">user_properties</option>
               </select>
-              <input value={virtualKey} onChange={(event) => setVirtualKey(event.target.value)} placeholder="transaction_id" />
-              <button className="secondary" onClick={addVirtualField}>Add</button>
+              <input value={virtualKey} onChange={(event) => setVirtualKey(event.target.value)} placeholder="Manual path, e.g. transaction_id" />
+              <button className="secondary" onClick={() => addVirtualField()}>Add</button>
+            </div>
+            <div className="json-actions">
+              <button className="secondary" disabled={!schema.length || jsonLoading} onClick={loadJsonProfile}>{jsonLoading ? "Exploring…" : "Explore JSON keys"}</button>
+              <input value={jsonSearch} onChange={(event) => setJsonSearch(event.target.value)} placeholder="Search JSON paths or sample values…" />
+            </div>
+            {jsonProfile ? <p className="mini-note">Scanned {jsonProfile.scannedRows.toLocaleString()} recent rows and found {jsonProfile.keys.length.toLocaleString()} JSON paths.</p> : null}
+            <div className="json-key-list">
+              {filteredJsonKeys.map((key) => (
+                <button className="json-key-row" key={key.path} onClick={() => addVirtualField(key.path)}>
+                  <strong>{key.path}</strong>
+                  <span>{key.count.toLocaleString()} rows</span>
+                  <small>{key.samples.join(" · ") || "No sample values"}</small>
+                </button>
+              ))}
             </div>
             <div className="chips">
               {selectedAliases.map((alias) => <span key={alias}>{alias}</span>)}
@@ -278,11 +354,26 @@ export default function Home() {
               </label>
               {hasEventTime ? <span className="hint">ORDER BY event_time DESC</span> : <span className="hint">No event_time detected</span>}
             </div>
+            <div className="date-shortcuts">
+              <label>
+                Start date
+                <input type="date" value={dateStart} onChange={(event) => setDateStart(event.target.value)} />
+              </label>
+              <label>
+                End date
+                <input type="date" value={dateEnd} onChange={(event) => setDateEnd(event.target.value)} />
+              </label>
+              <div className="date-buttons">
+                <button className="secondary" disabled={!hasEventTime} onClick={() => setRelativeDateRange(7)}>Last 7 days</button>
+                <button className="secondary" disabled={!hasEventTime} onClick={() => setRelativeDateRange(30)}>Last 30 days</button>
+                <button className="primary compact-button" disabled={!hasEventTime || (!dateStart && !dateEnd)} onClick={applyDateFilter}>Apply date filter</button>
+              </div>
+            </div>
             <button className="secondary full" disabled={!availableFilterFields.length && !hasEventTime} onClick={addFilter}>Add filter</button>
             <div className="filters">
               {filters.map((filter) => (
                 <div className="filter-row" key={filter.id}>
-                  <select value={fieldKey(filter.field)} onChange={(event) => updateFilter(filter.id, { field: selectedFields.find((field) => fieldKey(field) === event.target.value) ?? filter.field })}>
+                  <select value={fieldKey(filter.field)} onChange={(event) => updateFilter(filter.id, { field: availableFilterFields.find((field) => fieldKey(field) === event.target.value) ?? filter.field })}>
                     {availableFilterFields.map((field) => <option key={fieldKey(field)} value={fieldKey(field)}>{aliasForSelected(field)}</option>)}
                   </select>
                   <select value={filter.operator} onChange={(event) => updateFilter(filter.id, { operator: event.target.value as FilterOperator })}>
@@ -356,6 +447,18 @@ function displayCell(value: unknown) {
 function csvEscape(value: unknown) {
   const serialized = typeof value === "object" && value !== null ? JSON.stringify(value) : value === null || value === undefined ? "" : String(value);
   return `"${String(serialized).replace(/"/g, '""')}"`;
+}
+
+function formatDateInput(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function startOfDateInput(date: string) {
+  return `${date}T00:00`;
+}
+
+function endOfDateInput(date: string) {
+  return `${date}T23:59`;
 }
 
 function inputTypeForField(field: SelectedField) {

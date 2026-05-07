@@ -10,13 +10,13 @@ The app connects directly to BigQuery from server-side API routes, reads short-l
 - Loads and searches table schema metadata.
 - Highlights common Amplitude fields such as `user_id`, `event_time`, `event_type`, `device_id`, `session_id`, `insert_id`, `uuid`, `event_properties`, and `user_properties`.
 - Lets you select explicit output fields. `SELECT *` is not generated.
-- Adds virtual fields from JSON columns such as:
+- Explores JSON columns by sampling recent `event_properties` or `user_properties` objects, listing discovered paths with sample values, and adding selected paths as virtual fields such as:
   - `event_properties.transaction_id`
   - `event_properties.revenue`
   - `user_properties.affiliate_id`
 - Builds read-only, generated SQL from UI selections only.
-- Supports AND filters for equals, contains, starts with, greater than, less than, between, and is not null.
-- Requires a limit of 100, 500, 1,000, or 10,000 rows. The default is 100.
+- Supports AND filters for equals, contains, starts with, greater than, less than, between, and is not null, plus quick start/end date controls for `event_time`.
+- Requires a limit of 100, 500, 1,000, 10,000, or 50,000 rows. The default is 100.
 - Estimates bytes processed with a BigQuery dry run before execution when requested.
 - Orders by `event_time DESC` automatically when `event_time` exists in the table schema.
 - Renders a preview table and exports the returned result set to CSV in the browser.
@@ -78,7 +78,7 @@ Install dependencies:
 npm install
 ```
 
-Optionally copy `.env.example` to `.env.local` if you want default values prefilled in the UI:
+The UI is prefilled with `waking-up-c2a9b`, `amplitude`, and `EVENTS_271700`, so you can load that table without manually entering connection values. Optionally copy `.env.example` to `.env.local` if you want to override those defaults:
 
 ```bash
 cp .env.example .env.local
@@ -110,20 +110,20 @@ http://localhost:3000
 
 ## Analyst workflow
 
-1. Enter the BigQuery project ID, dataset, and table.
-2. Click **Load Schema**.
-3. Search or browse the schema and select output fields.
-4. Use **Select common fields** if you want typical Amplitude columns.
-5. Optionally add JSON virtual fields from `event_properties` or `user_properties`.
-6. Optionally add AND filters.
-7. Select a required LIMIT.
+1. Click **Load Schema** using the prefilled BigQuery project ID, dataset, and table, or edit them first if needed.
+2. Search or browse the schema and select output fields.
+3. Use **Select common fields** if you want typical Amplitude columns.
+4. Explore JSON keys from `event_properties` or `user_properties`, search paths/sample values, and click a discovered path to add it as a virtual output field.
+5. Use the quick start/end date controls or presets to add an `event_time` filter.
+6. Optionally add more AND filters.
+7. Select a required LIMIT up to 50,000.
 8. Click **Estimate bytes** to dry-run the generated query.
 9. Click **Preview results** to run the query.
 10. Click **Download CSV** to export only the returned rows.
 
 ## Notes on JSON extraction
 
-For virtual fields, the app generates BigQuery `JSON_VALUE` expressions. If the source column is a BigQuery `STRING`, it uses `SAFE.PARSE_JSON` first. If the source column is a BigQuery `JSON`, it reads from the JSON column directly.
+The JSON explorer samples recent rows from the selected JSON column, parses objects locally on the server, and shows discovered paths with example values. For virtual fields, the app generates BigQuery `JSON_VALUE` expressions. If the source column is a BigQuery `STRING`, it uses `SAFE.PARSE_JSON` first. If the source column is a BigQuery `JSON`, it reads from the JSON column directly.
 
 Virtual field aliases are cleaned for CSV/table output. For example:
 
