@@ -75,6 +75,7 @@ export type JsonProfileRequest = {
   rowLimit?: number;
   startDate?: string;
   endDate?: string;
+  eventTimeType?: string;
   orderByEventTime?: boolean;
 };
 

@@ -140,6 +140,7 @@ export default function Home() {
           rowLimit: 750,
           startDate: hasEventTime ? dateStart : "",
           endDate: hasEventTime ? dateEnd : "",
+          eventTimeType: fieldTypeMap.get("event_time"),
           orderByEventTime: hasEventTime
         })
       });
@@ -160,8 +161,8 @@ export default function Home() {
       id: "quick-date-filter",
       field: eventTimeField,
       operator: dateStart && dateEnd ? "between" : dateStart ? "greater_than" : "less_than",
-      value: dateStart ? startOfDateInput(dateStart) : endOfDateInput(dateEnd),
-      valueTo: dateStart && dateEnd ? endOfDateInput(dateEnd) : ""
+      value: dateStart ? startOfDateInput(dateStart, eventTimeField.type) : endOfDateInput(dateEnd, eventTimeField.type),
+      valueTo: dateStart && dateEnd ? endOfDateInput(dateEnd, eventTimeField.type) : ""
     };
 
     setFilters((current) => [filter, ...current.filter((item) => item.id !== filter.id)]);
@@ -453,12 +454,14 @@ function formatDateInput(date: Date) {
   return date.toISOString().slice(0, 10);
 }
 
-function startOfDateInput(date: string) {
+function startOfDateInput(date: string, fieldType?: string) {
+  if (fieldType?.toUpperCase() === "DATE") return date;
   return `${date}T00:00`;
 }
 
-function endOfDateInput(date: string) {
-  return `${date}T23:59`;
+function endOfDateInput(date: string, fieldType?: string) {
+  if (fieldType?.toUpperCase() === "DATE") return date;
+  return `${date}T23:59:59`;
 }
 
 function inputTypeForField(field: SelectedField) {

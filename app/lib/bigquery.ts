@@ -154,7 +154,7 @@ export function buildQuery(request: QueryRequest) {
 
       switch (filter.operator) {
         case "equals":
-          params[paramName] = requiredValue(filter.value, "equals");
+          params[paramName] = normalizeFilterValue(filter.field, requiredValue(filter.value, "equals"));
           return `${expression} = ${parameterReference(filter.field, paramName)}`;
         case "contains":
           params[paramName] = `%${requiredValue(filter.value, "contains")}%`;
@@ -163,14 +163,14 @@ export function buildQuery(request: QueryRequest) {
           params[paramName] = `${requiredValue(filter.value, "starts with")}%`;
           return `CAST(${expression} AS STRING) LIKE @${paramName}`;
         case "greater_than":
-          params[paramName] = requiredValue(filter.value, "greater than");
+          params[paramName] = normalizeFilterValue(filter.field, requiredValue(filter.value, "greater than"));
           return `${expression} > ${parameterReference(filter.field, paramName)}`;
         case "less_than":
-          params[paramName] = requiredValue(filter.value, "less than");
+          params[paramName] = normalizeFilterValue(filter.field, requiredValue(filter.value, "less than"));
           return `${expression} < ${parameterReference(filter.field, paramName)}`;
         case "between":
-          params[paramName] = requiredValue(filter.value, "between start");
-          params[paramToName] = requiredValue(filter.valueTo, "between end");
+          params[paramName] = normalizeFilterValue(filter.field, requiredValue(filter.value, "between start"));
+          params[paramToName] = normalizeFilterValue(filter.field, requiredValue(filter.valueTo, "between end"));
           return `${expression} BETWEEN ${parameterReference(filter.field, paramName)} AND ${parameterReference(filter.field, paramToName)}`;
         case "is_not_null":
           return `${expression} IS NOT NULL`;
@@ -190,6 +190,34 @@ export function buildQuery(request: QueryRequest) {
     .join("\n");
 
   return { sql, params, columns: request.fields.map(aliasForField) };
+}
+
+function normalizeFilterValue(field: SelectedField, value: string) {
+  if (field.kind === "virtual") return value;
+
+  switch (field.type?.toUpperCase()) {
+    case "TIMESTAMP":
+    case "DATETIME":
+      return normalizeDateTimeValue(value);
+    case "DATE":
+      return normalizeDateValue(value);
+    default:
+      return value;
+  }
+}
+
+function normalizeDateTimeValue(value: string) {
+  const normalized = value.trim().replace("T", " ");
+
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(normalized)) {
+    return `${normalized}:00`;
+  }
+
+  return normalized;
+}
+
+function normalizeDateValue(value: string) {
+  return value.trim().slice(0, 10);
 }
 
 function parameterReference(field: SelectedField, paramName: string) {
@@ -239,13 +267,13 @@ export function buildJsonProfileQuery(request: JsonProfileRequest) {
   const whereClauses = [`${quoteFieldPath(source)} IS NOT NULL`];
 
   if (request.startDate) {
-    params.start_date = request.startDate;
-    whereClauses.push(`${quoteFieldPath("event_time")} >= TIMESTAMP(@start_date)`);
+    params.start_date = startOfDateValue(request.startDate, request.eventTimeType);
+    whereClauses.push(`${quoteFieldPath("event_time")} >= ${temporalParameterReference(request.eventTimeType, "start_date")}`);
   }
 
   if (request.endDate) {
-    params.end_date = request.endDate;
-    whereClauses.push(`${quoteFieldPath("event_time")} < TIMESTAMP_ADD(TIMESTAMP(@end_date), INTERVAL 1 DAY)`);
+    params.end_date = endOfDateValue(request.endDate, request.eventTimeType);
+    whereClauses.push(`${quoteFieldPath("event_time")} <= ${temporalParameterReference(request.eventTimeType, "end_date")}`);
   }
 
   const sql = [
@@ -259,6 +287,28 @@ export function buildJsonProfileQuery(request: JsonProfileRequest) {
     .join("\n");
 
   return { sql, params };
+}
+
+function startOfDateValue(date: string, fieldType?: string) {
+  if (fieldType?.toUpperCase() === "DATE") return normalizeDateValue(date);
+  return `${normalizeDateValue(date)} 00:00:00`;
+}
+
+function endOfDateValue(date: string, fieldType?: string) {
+  if (fieldType?.toUpperCase() === "DATE") return normalizeDateValue(date);
+  return `${normalizeDateValue(date)} 23:59:59.999999`;
+}
+
+function temporalParameterReference(fieldType: string | undefined, paramName: string) {
+  switch (fieldType?.toUpperCase()) {
+    case "DATETIME":
+      return `DATETIME(@${paramName})`;
+    case "DATE":
+      return `DATE(@${paramName})`;
+    case "TIMESTAMP":
+    default:
+      return `TIMESTAMP(@${paramName})`;
+  }
 }
 
 export async function profileJsonFields(request: JsonProfileRequest) {
