@@ -516,3 +516,75 @@ td {
     grid-column: auto;
   }
 }
+
+.estimate-values {
+  display: grid;
+  flex: 1;
+  gap: 0.15rem;
+}
+
+.estimate-values span {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.event-type-picker {
+  background: #f8fafc;
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  display: grid;
+  gap: 0.7rem;
+  margin: 0.75rem 0;
+  padding: 0.7rem;
+}
+
+.event-type-actions {
+  align-items: center;
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: auto 1fr;
+}
+
+.event-type-list {
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  display: grid;
+  max-height: 16rem;
+  overflow: auto;
+}
+
+.event-type-row {
+  align-items: center;
+  background: #fff;
+  border-bottom: 1px solid #edf1f6;
+  border-radius: 0;
+  color: var(--text);
+  display: flex;
+  font-weight: 700;
+  gap: 0.75rem;
+  justify-content: space-between;
+  padding: 0.65rem 0.7rem;
+  text-align: left;
+}
+
+.event-type-row:last-child {
+  border-bottom: 0;
+}
+
+.event-type-row small {
+  color: var(--muted);
+  flex: 0 0 auto;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.compact-empty {
+  padding: 1rem;
+}
+
+@media (max-width: 640px) {
+  .event-type-actions {
+    grid-template-columns: 1fr;
+  }
+}

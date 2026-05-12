@@ -90,8 +90,32 @@ export type QueryResponse = {
   params: Record<string, string | number | boolean | null>;
   estimatedBytes?: string;
   estimatedBytesNumber?: number;
+  estimatedCost?: string;
+  estimatedCostUsd?: number;
+  costEstimateNote?: string;
   warning?: string;
   rows?: Record<string, unknown>[];
   rowCount?: number;
   columns?: string[];
+};
+
+
+export type EventTypeSummary = {
+  eventType: string;
+  count: number;
+};
+
+export type EventTypesRequest = {
+  projectId: string;
+  dataset: string;
+  table: string;
+  startDate?: string;
+  endDate?: string;
+  eventTimeType?: string;
+  limit?: number;
+};
+
+export type EventTypesResponse = {
+  eventTypes: EventTypeSummary[];
+  sql: string;
 };
