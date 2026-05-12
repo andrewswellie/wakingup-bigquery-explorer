@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
-import { COMMON_AMPLITUDE_FIELDS, FieldSchema, FilterOperator, JsonProfileResponse, JsonSource, LIMIT_OPTIONS, QueryFilter, QueryResponse, SelectedField } from "./lib/types";
+import { COMMON_AMPLITUDE_FIELDS, EventTypesResponse, FieldSchema, FilterOperator, JsonProfileResponse, JsonSource, LIMIT_OPTIONS, QueryFilter, QueryResponse, SelectedField } from "./lib/types";
 
 const operatorLabels: Record<FilterOperator, string> = {
   equals: "Equals",
@@ -30,6 +30,9 @@ export default function Home() {
   const [jsonProfile, setJsonProfile] = useState<JsonProfileResponse | null>(null);
   const [jsonSearch, setJsonSearch] = useState("");
   const [jsonLoading, setJsonLoading] = useState(false);
+  const [eventTypes, setEventTypes] = useState<EventTypesResponse | null>(null);
+  const [eventTypeSearch, setEventTypeSearch] = useState("");
+  const [eventTypesLoading, setEventTypesLoading] = useState(false);
   const [dateStart, setDateStart] = useState("");
   const [dateEnd, setDateEnd] = useState("");
   const [filters, setFilters] = useState<QueryFilter[]>([]);
@@ -42,8 +45,10 @@ export default function Home() {
   const fieldTypeMap = useMemo(() => new Map(schema.map((field) => [field.name, field.type])), [schema]);
   const selectedAliases = useMemo(() => selectedFields.map(aliasForSelected), [selectedFields]);
   const availableFilterFields = useMemo(() => {
-    const eventTimeField: SelectedField | undefined = hasEventTime ? { kind: "column", name: "event_time", type: fieldTypeMap.get("event_time") } : undefined;
-    return eventTimeField ? mergeSelected(selectedFields, [eventTimeField]) : selectedFields;
+    const helperFields: SelectedField[] = [];
+    if (hasEventTime) helperFields.push({ kind: "column", name: "event_time", type: fieldTypeMap.get("event_time") });
+    if (fieldTypeMap.has("event_type")) helperFields.push({ kind: "column", name: "event_type", type: fieldTypeMap.get("event_type") });
+    return mergeSelected(selectedFields, helperFields);
   }, [fieldTypeMap, hasEventTime, selectedFields]);
   const filteredSchema = useMemo(() => {
     const search = schemaSearch.toLowerCase().trim();
@@ -56,6 +61,12 @@ export default function Home() {
     if (!search) return keys;
     return keys.filter((key) => `${key.path} ${key.samples.join(" ")}`.toLowerCase().includes(search));
   }, [jsonProfile, jsonSearch]);
+  const filteredEventTypes = useMemo(() => {
+    const search = eventTypeSearch.toLowerCase().trim();
+    const values = eventTypes?.eventTypes ?? [];
+    if (!search) return values;
+    return values.filter((eventType) => eventType.eventType.toLowerCase().includes(search));
+  }, [eventTypeSearch, eventTypes]);
 
   async function loadSchema(event: FormEvent) {
     event.preventDefault();
@@ -76,6 +87,7 @@ export default function Home() {
       setSelectedFields([]);
       setFilters([]);
       setJsonProfile(null);
+      setEventTypes(null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load schema.");
     } finally {
@@ -152,6 +164,46 @@ export default function Home() {
     } finally {
       setJsonLoading(false);
     }
+  }
+
+  async function loadEventTypeOptions() {
+    setEventTypesLoading(true);
+    setError("");
+
+    try {
+      const response = await fetch("/api/event-types", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...connection,
+          startDate: hasEventTime ? dateStart : "",
+          endDate: hasEventTime ? dateEnd : "",
+          eventTimeType: fieldTypeMap.get("event_time"),
+          limit: 500
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "Unable to load event types.");
+      setEventTypes(data);
+    } catch (eventTypeError) {
+      setError(eventTypeError instanceof Error ? eventTypeError.message : "Unable to load event types.");
+    } finally {
+      setEventTypesLoading(false);
+    }
+  }
+
+  function selectEventType(eventType: string) {
+    const eventTypeField: SelectedField = { kind: "column", name: "event_type", type: fieldTypeMap.get("event_type") ?? "STRING" };
+    const filter: QueryFilter = {
+      id: `event-type-${eventType}`,
+      field: eventTypeField,
+      operator: "equals",
+      value: eventType,
+      valueTo: ""
+    };
+
+    setFilters((current) => [filter, ...current.filter((item) => item.id !== filter.id)]);
+    setEventTypeSearch(eventType);
   }
 
   function applyDateFilter() {
@@ -235,7 +287,7 @@ export default function Home() {
             <span>1</span>
             <div>
               <h2>Connection & table</h2>
-              <p>Uses the active Google Cloud CLI login on the Next.js server.</p>
+              <p>Uses the active Google Cloud CLI login on the Next.js server. The Amplitude EVENTS_271700 source runs through deduplicated_EVENTS_271700().</p>
             </div>
           </div>
           <label>
@@ -262,9 +314,15 @@ export default function Home() {
             </div>
           </div>
           <div className="estimate-row">
-            <button className="secondary" disabled={!selectedFields.length || queryLoading} onClick={() => runQuery(true)}>{queryLoading ? "Estimating…" : "Estimate bytes"}</button>
-            {query?.estimatedBytes ? <strong>{query.estimatedBytes}</strong> : <span>No estimate yet</span>}
+            <button className="secondary" disabled={!selectedFields.length || queryLoading} onClick={() => runQuery(true)}>{queryLoading ? "Estimating…" : "Estimate bytes & cost"}</button>
+            {query?.estimatedBytes ? (
+              <div className="estimate-values">
+                <strong>{query.estimatedBytes}</strong>
+                <span>Estimated cost: {query.estimatedCost ?? "Unknown"}</span>
+              </div>
+            ) : <span>No estimate yet</span>}
           </div>
+          {query?.costEstimateNote ? <p className="mini-note">{query.costEstimateNote}</p> : null}
           {query?.warning ? <div className="warning">{query.warning}</div> : null}
           <pre>{query?.sql ?? "Load a schema, select fields, then estimate or preview to generate SQL."}</pre>
         </section>
@@ -369,6 +427,26 @@ export default function Home() {
                 <button className="secondary" disabled={!hasEventTime} onClick={() => setRelativeDateRange(30)}>Last 30 days</button>
                 <button className="primary compact-button" disabled={!hasEventTime || (!dateStart && !dateEnd)} onClick={applyDateFilter}>Apply date filter</button>
               </div>
+            </div>
+            <div className="event-type-picker">
+              <div>
+                <strong>Event type picker</strong>
+                <p className="mini-note">Load distinct event_type values, search them, then click one to add an equals filter.</p>
+              </div>
+              <div className="event-type-actions">
+                <button className="secondary" disabled={!schema.length || eventTypesLoading} onClick={loadEventTypeOptions}>{eventTypesLoading ? "Loading…" : "Load event types"}</button>
+                <input value={eventTypeSearch} onChange={(event) => setEventTypeSearch(event.target.value)} placeholder="Search loaded event types…" />
+              </div>
+              {eventTypes ? (
+                <div className="event-type-list">
+                  {filteredEventTypes.length ? filteredEventTypes.slice(0, 80).map((eventType) => (
+                    <button className="event-type-row" key={eventType.eventType} onClick={() => selectEventType(eventType.eventType)}>
+                      <span>{eventType.eventType}</span>
+                      <small>{eventType.count.toLocaleString()} events</small>
+                    </button>
+                  )) : <div className="empty-state compact-empty">No matching event types.</div>}
+                </div>
+              ) : null}
             </div>
             <button className="secondary full" disabled={!availableFilterFields.length && !hasEventTime} onClick={addFilter}>Add filter</button>
             <div className="filters">

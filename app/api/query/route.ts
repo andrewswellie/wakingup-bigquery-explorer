@@ -15,6 +15,9 @@ export async function POST(request: Request) {
         columns,
         estimatedBytes: estimate.formatted,
         estimatedBytesNumber: estimate.totalBytesProcessed,
+        estimatedCost: estimate.formattedCost,
+        estimatedCostUsd: estimate.estimatedCostUsd,
+        costEstimateNote: estimate.costEstimateNote,
         warning: estimate.warning
       });
     }
@@ -26,6 +29,9 @@ export async function POST(request: Request) {
       columns,
       estimatedBytes: estimate.formatted,
       estimatedBytesNumber: estimate.totalBytesProcessed,
+      estimatedCost: estimate.formattedCost,
+      estimatedCostUsd: estimate.estimatedCostUsd,
+      costEstimateNote: estimate.costEstimateNote,
       warning: estimate.warning,
       rows,
       rowCount: rows.length

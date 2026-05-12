@@ -2,9 +2,12 @@ import { BigQuery } from "@google-cloud/bigquery";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { OAuth2Client } from "google-auth-library";
-import { COMMON_AMPLITUDE_FIELDS, JsonProfileKey, JsonProfileRequest, LIMIT_OPTIONS, QueryRequest, SelectedField } from "./types";
+import { COMMON_AMPLITUDE_FIELDS, EventTypesRequest, JsonProfileKey, JsonProfileRequest, LIMIT_OPTIONS, QueryRequest, SelectedField } from "./types";
 
 const MAX_LARGE_SCAN_BYTES = 10 * 1024 * 1024 * 1024;
+const configuredOnDemandPricePerTib = Number(process.env.BIGQUERY_ON_DEMAND_PRICE_PER_TIB_USD ?? "6.25");
+const ON_DEMAND_PRICE_PER_TIB_USD = Number.isFinite(configuredOnDemandPricePerTib) ? configuredOnDemandPricePerTib : 6.25;
+const ON_DEMAND_PRICING_NOTE = `Estimated from dry-run bytes at $${ON_DEMAND_PRICE_PER_TIB_USD.toFixed(2)} per TiB. BigQuery free tiers, editions, reservations, flat-rate commitments, cached results, and regional pricing can change actual charges.`;
 const GCLOUD_CLIENT_CACHE_MS = 45 * 60 * 1000;
 const GCLOUD_TOKEN_EXPIRY_MS = 55 * 60 * 1000;
 const execFileAsync = promisify(execFile);
@@ -65,6 +68,20 @@ async function getGcloudAccessToken() {
 
 export function quoteTablePath(projectId: string, dataset: string, table: string) {
   return `\`${escapeIdentifier(projectId)}.${escapeIdentifier(dataset)}.${escapeIdentifier(table)}\``;
+}
+
+export function quoteQuerySource(projectId: string, dataset: string, table: string) {
+  if (shouldUseDeduplicatedEventsFunction(dataset, table)) {
+    return `${quoteTablePath(projectId, dataset, "deduplicated_EVENTS_271700")}()`;
+  }
+
+  return quoteTablePath(projectId, dataset, table);
+}
+
+function shouldUseDeduplicatedEventsFunction(dataset: string, table: string) {
+  const normalizedDataset = dataset.trim().toLowerCase();
+  const normalizedTable = table.trim().toLowerCase();
+  return normalizedDataset === "amplitude" && ["events_271700", "deduplicated_events_271700"].includes(normalizedTable);
 }
 
 export function quoteFieldPath(fieldName: string) {
@@ -181,7 +198,7 @@ export function buildQuery(request: QueryRequest) {
 
   const sql = [
     `SELECT\n  ${selected.join(",\n  ")}`,
-    `FROM ${quoteTablePath(request.projectId, request.dataset, request.table)}`,
+    `FROM ${quoteQuerySource(request.projectId, request.dataset, request.table)}`,
     whereClauses.length ? `WHERE ${whereClauses.join("\n  AND ")}` : "",
     request.orderByEventTime ? `ORDER BY ${quoteFieldPath("event_time")} DESC` : "",
     `LIMIT ${limit}`
@@ -278,7 +295,7 @@ export function buildJsonProfileQuery(request: JsonProfileRequest) {
 
   const sql = [
     `SELECT ${quoteFieldPath(source)} AS json_blob`,
-    `FROM ${quoteTablePath(request.projectId, request.dataset, request.table)}`,
+    `FROM ${quoteQuerySource(request.projectId, request.dataset, request.table)}`,
     `WHERE ${whereClauses.join("\n  AND ")}`,
     request.orderByEventTime ? `ORDER BY ${quoteFieldPath("event_time")} DESC` : "",
     `LIMIT ${rowLimit}`
@@ -309,6 +326,46 @@ function temporalParameterReference(fieldType: string | undefined, paramName: st
     default:
       return `TIMESTAMP(@${paramName})`;
   }
+}
+
+export function buildEventTypesQuery(request: EventTypesRequest) {
+  const limit = Math.min(Math.max(Number(request.limit) || 500, 1), 1000);
+  const params: Record<string, string> = {};
+  const whereClauses = [`${quoteFieldPath("event_type")} IS NOT NULL`];
+
+  if (request.startDate) {
+    params.start_date = startOfDateValue(request.startDate, request.eventTimeType);
+    whereClauses.push(`${quoteFieldPath("event_time")} >= ${temporalParameterReference(request.eventTimeType, "start_date")}`);
+  }
+
+  if (request.endDate) {
+    params.end_date = endOfDateValue(request.endDate, request.eventTimeType);
+    whereClauses.push(`${quoteFieldPath("event_time")} <= ${temporalParameterReference(request.eventTimeType, "end_date")}`);
+  }
+
+  const sql = [
+    `SELECT CAST(${quoteFieldPath("event_type")} AS STRING) AS event_type, COUNT(*) AS event_count`,
+    `FROM ${quoteQuerySource(request.projectId, request.dataset, request.table)}`,
+    `WHERE ${whereClauses.join("\n  AND ")}`,
+    `GROUP BY event_type`,
+    `ORDER BY event_count DESC, event_type`,
+    `LIMIT ${limit}`
+  ].join("\n");
+
+  return { sql, params };
+}
+
+export async function loadEventTypes(request: EventTypesRequest) {
+  const { sql, params } = buildEventTypesQuery(request);
+  const rows = await runQuery(request.projectId, sql, params);
+
+  return {
+    eventTypes: rows.map((row) => ({
+      eventType: String(row.event_type ?? ""),
+      count: Number(row.event_count ?? 0)
+    })).filter((eventType) => eventType.eventType),
+    sql
+  };
 }
 
 export async function profileJsonFields(request: JsonProfileRequest) {
@@ -370,7 +427,8 @@ function sampleJsonValue(value: unknown) {
 
 export async function getSchema(projectId: string, dataset: string, table: string) {
   const client = await getBigQueryClient(projectId);
-  const [metadata] = await client.dataset(dataset).table(table).getMetadata();
+  const metadataTable = shouldUseDeduplicatedEventsFunction(dataset, table) ? "EVENTS_271700" : table;
+  const [metadata] = await client.dataset(dataset).table(metadataTable).getMetadata();
   const fields = (metadata.schema?.fields ?? []) as Array<{
     name: string;
     type: string;
@@ -387,12 +445,17 @@ export async function estimateQuery(projectId: string, sql: string, params: Reco
   const [job] = await client.createQueryJob({ query: sql, params, dryRun: true, useLegacySql: false });
   const totalBytesProcessed = Number(job.metadata.statistics?.totalBytesProcessed ?? 0);
 
+  const estimatedCostUsd = estimateOnDemandCost(totalBytesProcessed);
+
   return {
     totalBytesProcessed,
     formatted: formatBytes(totalBytesProcessed),
+    estimatedCostUsd,
+    formattedCost: formatUsd(estimatedCostUsd),
+    costEstimateNote: ON_DEMAND_PRICING_NOTE,
     warning:
       totalBytesProcessed > MAX_LARGE_SCAN_BYTES
-        ? `This query may scan ${formatBytes(totalBytesProcessed)}. Consider adding filters or lowering the limit.`
+        ? `This query may scan ${formatBytes(totalBytesProcessed)} and cost about ${formatUsd(estimatedCostUsd)} on on-demand pricing. Consider adding filters or lowering the limit.`
         : undefined
   };
 }
@@ -441,6 +504,26 @@ export function formatBytes(bytes: number) {
   const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / 1024 ** exponent;
   return `${value >= 10 || exponent === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[exponent]}`;
+}
+
+function estimateOnDemandCost(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0 || !Number.isFinite(ON_DEMAND_PRICE_PER_TIB_USD)) {
+    return 0;
+  }
+
+  return (bytes / 1024 ** 4) * ON_DEMAND_PRICE_PER_TIB_USD;
+}
+
+function formatUsd(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "$0.00";
+  }
+
+  if (value < 0.01) {
+    return "<$0.01";
+  }
+
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value);
 }
 
 export function hasEventTime(fields: Array<{ name: string }>) {
