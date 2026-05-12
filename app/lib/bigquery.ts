@@ -73,8 +73,8 @@ export function quoteTablePath(projectId: string, dataset: string, table: string
 export function quoteQuerySource(projectId: string, dataset: string, table: string) {
   if (shouldUseDeduplicatedEventsFunction(dataset, table)) {
     return `${quoteTablePath(projectId, dataset, "deduplicated_EVENTS_271700")}(
-  start_date => DATE @start_date,
-  end_date => DATE @end_date
+  start_date => CAST(@start_date AS DATE),
+  end_date => CAST(@end_date AS DATE)
 )`;
   }
 
