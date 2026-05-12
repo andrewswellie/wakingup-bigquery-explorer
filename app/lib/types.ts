@@ -54,6 +54,10 @@ export type QueryRequest = {
   fields: SelectedField[];
   filters: QueryFilter[];
   limit: number;
+  startDate?: string;
+  endDate?: string;
+  eventName?: string;
+  userIds?: string[] | string;
   orderByEventTime?: boolean;
   estimateOnly?: boolean;
 };
@@ -87,7 +91,7 @@ export type JsonProfileResponse = {
 
 export type QueryResponse = {
   sql: string;
-  params: Record<string, string | number | boolean | null>;
+  params: Record<string, string | string[] | number | boolean | null>;
   estimatedBytes?: string;
   estimatedBytesNumber?: number;
   estimatedCost?: string;

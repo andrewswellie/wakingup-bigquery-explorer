@@ -72,13 +72,16 @@ export function quoteTablePath(projectId: string, dataset: string, table: string
 
 export function quoteQuerySource(projectId: string, dataset: string, table: string) {
   if (shouldUseDeduplicatedEventsFunction(dataset, table)) {
-    return `${quoteTablePath(projectId, dataset, "deduplicated_EVENTS_271700")}()`;
+    return `${quoteTablePath(projectId, dataset, "deduplicated_EVENTS_271700")}(
+  start_date => DATE @start_date,
+  end_date => DATE @end_date
+)`;
   }
 
   return quoteTablePath(projectId, dataset, table);
 }
 
-function shouldUseDeduplicatedEventsFunction(dataset: string, table: string) {
+export function shouldUseDeduplicatedEventsFunction(dataset: string, table: string) {
   const normalizedDataset = dataset.trim().toLowerCase();
   const normalizedTable = table.trim().toLowerCase();
   return normalizedDataset === "amplitude" && ["events_271700", "deduplicated_events_271700"].includes(normalizedTable);
@@ -147,6 +150,7 @@ function escapeJsonPathPart(part: string) {
 }
 
 export function buildQuery(request: QueryRequest) {
+  const usesDeduplicatedEventsFunction = shouldUseDeduplicatedEventsFunction(request.dataset, request.table);
   const limit = Number(request.limit);
   if (!LIMIT_OPTIONS.includes(limit as (typeof LIMIT_OPTIONS)[number])) {
     throw new Error("Choose one of the supported LIMIT values: 100, 500, 1,000, 10,000, or 50,000.");
@@ -161,8 +165,17 @@ export function buildQuery(request: QueryRequest) {
     return `${expressionForField(field)} AS \`${escapeIdentifier(alias)}\``;
   });
 
-  const params: Record<string, string> = {};
+  const params: Record<string, string | string[]> = {};
+
+  if (usesDeduplicatedEventsFunction) {
+    addDeduplicatedEventsDateParams(params, request.startDate, request.endDate);
+  }
+
+  const eventNameFilter = findEventNameFilter(request);
+  const eventName = requiredEventName(request.eventName ?? eventNameFilter?.value, usesDeduplicatedEventsFunction);
+  const userIds = parseUserIds(request.userIds);
   const whereClauses = request.filters
+    .filter((filter) => filter !== eventNameFilter)
     .filter((filter) => filter.field && filter.operator)
     .map((filter, index) => {
       const expression = expressionForField(filter.field);
@@ -196,6 +209,16 @@ export function buildQuery(request: QueryRequest) {
       }
     });
 
+  if (eventName) {
+    params.event_name = eventName;
+    whereClauses.unshift(`${quoteFieldPath("event_type")} = @event_name`);
+  }
+
+  if (userIds.length) {
+    params.user_ids = userIds;
+    whereClauses.push(`${quoteFieldPath("user_id")} IN UNNEST(@user_ids)`);
+  }
+
   const sql = [
     `SELECT\n  ${selected.join(",\n  ")}`,
     `FROM ${quoteQuerySource(request.projectId, request.dataset, request.table)}`,
@@ -207,6 +230,48 @@ export function buildQuery(request: QueryRequest) {
     .join("\n");
 
   return { sql, params, columns: request.fields.map(aliasForField) };
+}
+
+
+function addDeduplicatedEventsDateParams(params: Record<string, string | string[]>, startDate: string | undefined, endDate: string | undefined) {
+  params.start_date = requiredIsoDate(startDate, "start_date");
+  params.end_date = requiredIsoDate(endDate, "end_date");
+}
+
+function requiredIsoDate(value: string | undefined, label: string) {
+  if (!value?.trim()) {
+    throw new Error(`${label} is required for the Amplitude deduplicated events source.`);
+  }
+
+  const trimmed = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    throw new Error(`${label} must be a valid YYYY-MM-DD date.`);
+  }
+
+  const parsed = new Date(`${trimmed}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== trimmed) {
+    throw new Error(`${label} must be a valid YYYY-MM-DD date.`);
+  }
+
+  return trimmed;
+}
+
+function findEventNameFilter(request: QueryRequest) {
+  return request.filters.find((filter) => filter.field?.kind === "column" && filter.field.name === "event_type" && filter.operator === "equals");
+}
+
+function requiredEventName(value: string | undefined, required: boolean) {
+  const trimmed = value?.trim() ?? "";
+  if (required && !trimmed) {
+    throw new Error("event_name is required for the Amplitude deduplicated events source. Add an event_type equals filter before running the query.");
+  }
+
+  return trimmed;
+}
+
+function parseUserIds(value: QueryRequest["userIds"]) {
+  const rawValues = Array.isArray(value) ? value : (value ?? "").split(/[\n,]+/);
+  return rawValues.map((userId) => userId.trim()).filter(Boolean);
 }
 
 function normalizeFilterValue(field: SelectedField, value: string) {
@@ -280,17 +345,22 @@ function requiredValue(value: string | undefined, label: string) {
 export function buildJsonProfileQuery(request: JsonProfileRequest) {
   const source = request.source === "user_properties" ? "user_properties" : "event_properties";
   const rowLimit = Math.min(Math.max(Number(request.rowLimit) || 500, 1), 2000);
-  const params: Record<string, string> = {};
+  const usesDeduplicatedEventsFunction = shouldUseDeduplicatedEventsFunction(request.dataset, request.table);
+  const params: Record<string, string | string[]> = {};
   const whereClauses = [`${quoteFieldPath(source)} IS NOT NULL`];
 
-  if (request.startDate) {
-    params.start_date = startOfDateValue(request.startDate, request.eventTimeType);
-    whereClauses.push(`${quoteFieldPath("event_time")} >= ${temporalParameterReference(request.eventTimeType, "start_date")}`);
-  }
+  if (usesDeduplicatedEventsFunction) {
+    addDeduplicatedEventsDateParams(params, request.startDate, request.endDate);
+  } else {
+    if (request.startDate) {
+      params.start_date = startOfDateValue(request.startDate, request.eventTimeType);
+      whereClauses.push(`${quoteFieldPath("event_time")} >= ${temporalParameterReference(request.eventTimeType, "start_date")}`);
+    }
 
-  if (request.endDate) {
-    params.end_date = endOfDateValue(request.endDate, request.eventTimeType);
-    whereClauses.push(`${quoteFieldPath("event_time")} <= ${temporalParameterReference(request.eventTimeType, "end_date")}`);
+    if (request.endDate) {
+      params.end_date = endOfDateValue(request.endDate, request.eventTimeType);
+      whereClauses.push(`${quoteFieldPath("event_time")} <= ${temporalParameterReference(request.eventTimeType, "end_date")}`);
+    }
   }
 
   const sql = [
@@ -330,17 +400,22 @@ function temporalParameterReference(fieldType: string | undefined, paramName: st
 
 export function buildEventTypesQuery(request: EventTypesRequest) {
   const limit = Math.min(Math.max(Number(request.limit) || 500, 1), 1000);
-  const params: Record<string, string> = {};
+  const usesDeduplicatedEventsFunction = shouldUseDeduplicatedEventsFunction(request.dataset, request.table);
+  const params: Record<string, string | string[]> = {};
   const whereClauses = [`${quoteFieldPath("event_type")} IS NOT NULL`];
 
-  if (request.startDate) {
-    params.start_date = startOfDateValue(request.startDate, request.eventTimeType);
-    whereClauses.push(`${quoteFieldPath("event_time")} >= ${temporalParameterReference(request.eventTimeType, "start_date")}`);
-  }
+  if (usesDeduplicatedEventsFunction) {
+    addDeduplicatedEventsDateParams(params, request.startDate, request.endDate);
+  } else {
+    if (request.startDate) {
+      params.start_date = startOfDateValue(request.startDate, request.eventTimeType);
+      whereClauses.push(`${quoteFieldPath("event_time")} >= ${temporalParameterReference(request.eventTimeType, "start_date")}`);
+    }
 
-  if (request.endDate) {
-    params.end_date = endOfDateValue(request.endDate, request.eventTimeType);
-    whereClauses.push(`${quoteFieldPath("event_time")} <= ${temporalParameterReference(request.eventTimeType, "end_date")}`);
+    if (request.endDate) {
+      params.end_date = endOfDateValue(request.endDate, request.eventTimeType);
+      whereClauses.push(`${quoteFieldPath("event_time")} <= ${temporalParameterReference(request.eventTimeType, "end_date")}`);
+    }
   }
 
   const sql = [
@@ -440,7 +515,7 @@ export async function getSchema(projectId: string, dataset: string, table: strin
   return fields;
 }
 
-export async function estimateQuery(projectId: string, sql: string, params: Record<string, string>) {
+export async function estimateQuery(projectId: string, sql: string, params: Record<string, string | string[]>) {
   const client = await getBigQueryClient(projectId);
   const [job] = await client.createQueryJob({ query: sql, params, dryRun: true, useLegacySql: false });
   const totalBytesProcessed = Number(job.metadata.statistics?.totalBytesProcessed ?? 0);
@@ -460,7 +535,7 @@ export async function estimateQuery(projectId: string, sql: string, params: Reco
   };
 }
 
-export async function runQuery(projectId: string, sql: string, params: Record<string, string>) {
+export async function runQuery(projectId: string, sql: string, params: Record<string, string | string[]>) {
   const client = await getBigQueryClient(projectId);
   const [rows] = await client.query({ query: sql, params, useLegacySql: false });
   return rows.map(serializeRow) as Record<string, unknown>[];

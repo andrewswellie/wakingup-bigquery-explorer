@@ -27,7 +27,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -49,7 +50,8 @@ button:not(:disabled):hover {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   border: 1px solid var(--panel-border);
   border-radius: 10px;
@@ -60,7 +62,8 @@ select {
 }
 
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(36, 87, 214, 0.13);
 }
@@ -527,6 +530,19 @@ td {
   color: var(--muted);
   font-size: 0.84rem;
   font-weight: 700;
+}
+
+.user-id-paste {
+  background: #f8fafc;
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  margin-top: 0.75rem;
+  padding: 0.7rem;
+}
+
+.user-id-paste textarea {
+  min-height: 6rem;
+  resize: vertical;
 }
 
 .event-type-picker {

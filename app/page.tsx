@@ -36,6 +36,7 @@ export default function Home() {
   const [dateStart, setDateStart] = useState("");
   const [dateEnd, setDateEnd] = useState("");
   const [filters, setFilters] = useState<QueryFilter[]>([]);
+  const [userIdsInput, setUserIdsInput] = useState("");
   const [limit, setLimit] = useState(100);
   const [query, setQuery] = useState<QueryResponse | null>(null);
   const [schemaLoading, setSchemaLoading] = useState(false);
@@ -241,6 +242,9 @@ export default function Home() {
           fields: selectedFields,
           filters,
           limit,
+          startDate: dateStart,
+          userIds: userIdsInput,
+          endDate: dateEnd,
           orderByEventTime: hasEventTime,
           estimateOnly
         })
@@ -428,6 +432,11 @@ export default function Home() {
                 <button className="primary compact-button" disabled={!hasEventTime || (!dateStart && !dateEnd)} onClick={applyDateFilter}>Apply date filter</button>
               </div>
             </div>
+            <label className="user-id-paste">
+              Optional user_id list
+              <textarea value={userIdsInput} onChange={(event) => setUserIdsInput(event.target.value)} placeholder="Paste user_ids separated by new lines or commas" />
+              <span className="mini-note">When provided, generated SQL adds a parameterized user_id IN UNNEST(@user_ids) filter.</span>
+            </label>
             <div className="event-type-picker">
               <div>
                 <strong>Event type picker</strong>
